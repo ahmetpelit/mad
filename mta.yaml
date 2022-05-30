@@ -1,0 +1,146 @@
+ID: mad
+_schema-version: "3.1"
+version: 0.0.1
+
+parameters:
+  enable-parallel-deployments: true
+
+modules:
+  - name: mad-db
+    type: com.sap.xs.hdi-dynamic
+    path: db
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+    parameters:
+      memory: 256M
+      disk-quota: 512M
+    properties:
+      hdi_dynamic_deploy_user: ${generated-user}
+      hdi_dynamic_deploy_password: ${generated-password}
+    provides:
+      - name: db_api
+        properties:
+          url: ${default-url}
+          user: ${generated-user}
+          password: ${generated-password}
+
+  - name: mad-srv
+    type: nodejs
+    path: srv
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+    parameters:
+      memory: 256M
+      disk-quota: 512M
+    provides:
+      - name: srv_api
+        properties:
+          url: ${default-url}
+    requires:
+      - name: mad-uaa
+      - name: mad-registry
+      - name: mad-sm
+      - name: db_api
+        properties:
+          db_api_url: ~{url}
+          db_api_user: ~{user}
+          db_api_password: ~{password}
+      - name: mad-dest
+
+  - name: mad
+    type: html5
+    path: app
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+    parameters:
+      memory: 256M
+      disk-quota: 512M
+      keep-existing-routes: true
+    provides:
+      - name: app_api
+        properties:
+          url: ${default-url}
+          application: ${app-name}
+    properties:
+      TENANT_HOST_PATTERN: '^(.*)-${space}-${app-name}.${default-domain}'
+    requires:
+      - name: mad-uaa
+      - name: srv_api
+        group: destinations
+        properties:
+          name: srv
+          url: ~{url}
+          forwardAuthToken: true
+
+resources:
+  - name: mad-uaa
+    type: org.cloudfoundry.managed-service
+    requires: 
+      - name: app_api
+    properties:
+      XSAPPNAME: ${xsuaa-app}
+    parameters:
+      path: ./xs-security.json
+      service: xsuaa
+      service-plan: application
+      xsuaa-app: ${space}-~{app_api/application}
+      config:
+        xsappname: ${xsuaa-app}
+  - name: mad-sm
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: service-manager
+      service-plan: container
+  - name: mad-registry
+    type: org.cloudfoundry.managed-service
+    requires:
+      - name: mad-uaa
+    parameters:
+      service: saas-registry
+      service-plan: application
+      service-name: mad-registry
+      config:
+        xsappname: ~{mad-uaa/XSAPPNAME}
+        appName: mad
+        displayName: 'Multitenant Application Dashboard'
+        description: 'Multitenant Application Dashboard'
+        category: 'Dashboard'
+        appUrls:
+          onSubscription: https://${org}-${space}-mad-srv.${default-domain}/callback/v1.0/tenants/{tenantId}
+          getDependencies: https://${org}-${space}-mad-srv.${default-domain}/callback/v1.0/dependencies
+  - name: mad-dest
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        init_data:
+          instance:
+            existing_destinations_policy: ignore
+            destinations:
+              - Name: mad-cfapi
+                Description: CF Cloud Controller API
+                URL: ${controller-url}
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: OAuth2Password
+                tokenServiceURL: ${authorization-url}/oauth/token
+                clientId: cf
+                clientSecret:
+                User: <SetValueInCockpit>
+                Password: <SetValueInCockpit>
+              - Name: mad-dest
+                Description: Application Destination
+                URL: https://services.odata.org/Northwind/Northwind.svc
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: NoAuthentication
